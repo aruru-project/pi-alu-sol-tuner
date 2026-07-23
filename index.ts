@@ -1,6 +1,5 @@
 import { Agent, type AgentLoopConfig, type ShouldStopAfterTurnContext } from "@earendil-works/pi-agent-core";
 import {
-	VERSION,
 	type ExtensionAPI,
 	type ExtensionContext,
 	type SessionCompactEvent,
@@ -10,7 +9,6 @@ const EXTENSION_ID = "sol-mid-turn-guard";
 const STATUS_KEY = EXTENSION_ID;
 const TARGET_MODEL_ID = "gpt-5.6-sol";
 const TOKEN_THRESHOLD = 250_000;
-const SUPPORTED_PI_VERSIONS = new Set(["0.80.6", "0.80.7"]);
 const PATCH_KEY = Symbol.for("pi.sol-mid-turn-guard.patch.v2");
 const LEGACY_PATCH_KEY = Symbol.for("pi.sol-mid-turn-guard.patch.v1");
 
@@ -65,10 +63,6 @@ function formatTokens(tokens: number): string {
 }
 
 function installPatch(): { active: boolean; reason?: string } {
-	if (!SUPPORTED_PI_VERSIONS.has(VERSION)) {
-		return { active: false, reason: `unsupported Pi ${VERSION}` };
-	}
-
 	const prototype = Agent.prototype as unknown as AgentInternals;
 	let host = getPatchHost();
 

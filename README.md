@@ -1,6 +1,6 @@
 # Pi Sol mid-turn guard
 
-Temporary local extension for Pi 0.80.6/0.80.7.
+Temporary local Pi extension. It uses runtime shape checks instead of a Pi version allowlist.
 
 When a successful `gpt-5.6-sol` tool turn reports more than 250,000 tokens and no owner message is queued, the extension stops the low-level loop at `shouldStopAfterTurn`. After Pi settles, it uses Pi's normal compaction path and sends one hidden continuation message. A process-wide prototype wrapper routes through a `sessionId` registry so concurrent Pi runtimes keep independent guard state.
 
