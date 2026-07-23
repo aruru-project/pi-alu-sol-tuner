@@ -1,0 +1,9 @@
+{
+  "name": "pi-sol-mid-turn-guard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "smoke": "node test/smoke.mjs"
+  }
+}
