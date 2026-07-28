@@ -2,8 +2,22 @@
   "name": "pi-sol-mid-turn-guard",
   "version": "0.1.0",
   "private": true,
+  "description": "在超长工具回合后让 Pi 先压缩上下文，再自动继续任务",
+  "license": "MIT",
   "type": "module",
+  "keywords": [
+    "pi-package"
+  ],
   "scripts": {
     "smoke": "node test/smoke.mjs"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
   }
 }
