@@ -1,9 +1,11 @@
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { Agent, type AgentLoopConfig, type ShouldStopAfterTurnContext } from "@earendil-works/pi-agent-core";
 import {
+	CONFIG_DIR_NAME,
 	type ExtensionAPI,
 	type ExtensionContext,
+	getAgentDir,
 	type SessionCompactEvent,
 } from "@earendil-works/pi-coding-agent";
 
@@ -73,36 +75,32 @@ interface AluSolConfig {
 	guardThreshold: number;
 }
 
-function readConfig(startDir: string): AluSolConfig {
-	let dir = startDir;
-	for (let depth = 0; depth < 64; depth += 1) {
-		const file = join(dir, ".pi", "alu-sol.json");
-		if (existsSync(file)) {
-			try {
-				const parsed = JSON.parse(readFileSync(file, "utf8")) as {
-					disable?: unknown;
-					guardThreshold?: unknown;
-				};
-				const disable = Array.isArray(parsed?.disable) ? parsed.disable : [];
-				const configuredThreshold = parsed?.guardThreshold;
-				const guardThreshold = typeof configuredThreshold === "number"
-					&& Number.isInteger(configuredThreshold)
-					&& configuredThreshold > 0
-					? configuredThreshold
-					: DEFAULT_GUARD_THRESHOLD;
-				return {
-					disabled: new Set(disable.filter((item): item is string => typeof item === "string")),
-					guardThreshold,
-				};
-			} catch {
-				return { disabled: new Set(), guardThreshold: DEFAULT_GUARD_THRESHOLD };
+function readConfig(cwd: string): AluSolConfig {
+	const config: AluSolConfig = {
+		disabled: new Set(),
+		guardThreshold: DEFAULT_GUARD_THRESHOLD,
+	};
+	for (const file of [
+		join(getAgentDir(), "alu-sol.json"),
+		join(cwd, CONFIG_DIR_NAME, "alu-sol.json"),
+	]) {
+		try {
+			const parsed = JSON.parse(readFileSync(file, "utf8")) as {
+				disable?: unknown;
+				guardThreshold?: unknown;
+			};
+			if (Array.isArray(parsed?.disable) && parsed.disable.every((item) => typeof item === "string")) {
+				config.disabled = new Set(parsed.disable);
 			}
+			const threshold = parsed?.guardThreshold;
+			if (typeof threshold === "number" && Number.isInteger(threshold) && threshold > 0) {
+				config.guardThreshold = threshold;
+			}
+		} catch {
+			// Missing and malformed layers are ignored independently.
 		}
-		const parent = dirname(dir);
-		if (parent === dir) break;
-		dir = parent;
 	}
-	return { disabled: new Set(), guardThreshold: DEFAULT_GUARD_THRESHOLD };
+	return config;
 }
 
 function getPatchHost(): PatchHost | undefined {

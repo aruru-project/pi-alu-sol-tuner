@@ -9,6 +9,8 @@ const extensionPath = join(projectRoot, "index.ts");
 const globalNodeModules = execFileSync("npm", ["root", "-g"], { encoding: "utf8" }).trim();
 const piRoot = join(globalNodeModules, "@earendil-works", "pi-coding-agent");
 const tempAgentDir = mkdtempSync(join(tmpdir(), "sol-guard-smoke-"));
+const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+process.env.PI_CODING_AGENT_DIR = tempAgentDir;
 
 try {
 	const loader = await import(pathToFileURL(join(piRoot, "dist/core/extensions/loader.js")));
@@ -160,13 +162,15 @@ try {
 		throw new Error("runtime B compaction error did not stop without continuation");
 	}
 
-	const configuredRoot = join(tempAgentDir, "configured-project");
-	const configuredCwd = join(configuredRoot, "nested", "worktree");
-	const configDir = join(configuredRoot, ".pi");
+	const configuredCwd = join(tempAgentDir, "configured-project");
+	const configDir = join(configuredCwd, ".pi");
 	const configFile = join(configDir, "alu-sol.json");
-	mkdirSync(configuredCwd, { recursive: true });
 	mkdirSync(configDir, { recursive: true });
-	writeFileSync(configFile, JSON.stringify({ disable: ["all"], guardThreshold: 100 }));
+	writeFileSync(join(tempAgentDir, "alu-sol.json"), JSON.stringify({
+		disable: ["sol-discipline"],
+		guardThreshold: 100,
+	}));
+	writeFileSync(configFile, JSON.stringify({ disable: ["all"] }));
 	const configuredRuntime = await loadRuntime("runtime-configured", configuredCwd);
 	const disabledPrompt = await emit(configuredRuntime.extension, "before_agent_start", configuredRuntime.ctx, {
 		systemPrompt: "base prompt",
@@ -176,21 +180,26 @@ try {
 	const configuredAgent = new Agent({ sessionId: "runtime-configured" });
 	const configuredLoop = configuredAgent.createLoopConfig();
 	if (!(await configuredLoop.shouldStopAfterTurn(turn(message("gpt-5.6-sol", 101))))) {
-		throw new Error("configured guard threshold did not take effect independently of disable=all");
+		throw new Error("global guard threshold did not combine with project disable=all");
 	}
 	await emit(configuredRuntime.extension, "agent_settled", configuredRuntime.ctx);
 	if (configuredRuntime.calls.compactions !== 1 || configuredRuntime.calls.messages.length !== 1) {
 		throw new Error("configured guard did not compact and resume");
 	}
 
-	writeFileSync(configFile, JSON.stringify({ disable: ["sol-discipline"], guardThreshold: 100 }));
+	writeFileSync(configFile, JSON.stringify({ disable: [123], guardThreshold: 200 }));
 	const floorOnlyPrompt = await emit(configuredRuntime.extension, "before_agent_start", configuredRuntime.ctx, {
 		systemPrompt: "base prompt",
 		systemPromptOptions: { cwd: configuredCwd },
 	});
 	if (!floorOnlyPrompt?.systemPrompt.includes("## 全局工程底线")
 		|| floorOnlyPrompt.systemPrompt.includes("## GPT-5.6 Sol 专项纪律")) {
-		throw new Error("sol-discipline disable category did not preserve only engineering discipline");
+		throw new Error("invalid project disable did not retain the global disable field");
+	}
+	const overrideAgent = new Agent({ sessionId: "runtime-configured" });
+	const overrideLoop = overrideAgent.createLoopConfig();
+	if (await overrideLoop.shouldStopAfterTurn(turn(message("gpt-5.6-sol", 150)))) {
+		throw new Error("project guard threshold did not override the global field");
 	}
 	writeFileSync(configFile, JSON.stringify({ disable: ["engineering-discipline"], guardThreshold: 100 }));
 	const solOnlyPrompt = await emit(configuredRuntime.extension, "before_agent_start", configuredRuntime.ctx, {
@@ -220,5 +229,7 @@ try {
 		"smoke ok: discipline injection/gating/disable, default/configured thresholds, stop/compact/resume, dual-runtime routing, compact error, stale cleanup, reload idempotence",
 	);
 } finally {
+	if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+	else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
 	rmSync(tempAgentDir, { recursive: true, force: true });
 }
