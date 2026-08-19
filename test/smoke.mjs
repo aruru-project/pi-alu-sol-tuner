@@ -158,8 +158,25 @@ try {
 	}
 	runtimeB.calls.compactError = true;
 	await emit(runtimeB.extension, "agent_settled", runtimeB.ctx);
-	if (runtimeB.calls.compactions !== 1 || runtimeB.calls.messages.length !== 0) {
-		throw new Error("runtime B compaction error did not stop without continuation");
+	if (runtimeB.calls.compactions !== 1
+		|| runtimeB.calls.messages.length !== 1
+		|| runtimeB.calls.messages[0].options?.triggerTurn !== true
+		|| !runtimeB.calls.messages[0].message?.content?.includes("compaction failed")) {
+		throw new Error("runtime B compaction error did not continue the agent loop");
+	}
+
+	// A failed plugin-owned compaction resumes normal work. The next successful
+	// tool turn must be eligible for another compaction attempt.
+	if (!(await configB.shouldStopAfterTurn(turn(message("gpt-5.6-sol", 250_001))))) {
+		throw new Error("runtime B did not retry compaction after resumed tool work");
+	}
+	runtimeB.calls.compactError = false;
+	await emit(runtimeB.extension, "agent_settled", runtimeB.ctx);
+	if (runtimeB.calls.compactions !== 2
+		|| runtimeB.calls.messages.length !== 2
+		|| runtimeB.calls.messages[1].options?.triggerTurn !== true
+		|| !runtimeB.calls.messages[1].message?.content?.includes("compaction completed")) {
+		throw new Error("runtime B did not compact and continue after the next tool turn");
 	}
 
 	const configuredCwd = join(tempAgentDir, "configured-project");

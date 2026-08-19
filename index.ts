@@ -42,8 +42,10 @@ const SOL = `
 - 触发上下文压缩说明任务规模已超标：恢复后只收尾，不开新线。
 - 引用规则指控或模仿例外前，先回答"它防的是什么事故"；字面命中但本意不符，降级为一行备注或放弃。`;
 
-const CONTINUATION_MESSAGE =
+const COMPACTION_COMPLETED_CONTINUATION =
 	"Automatic context compaction completed after a finished tool turn. Continue the original task from the compacted state. Do not repeat completed work or tool calls. If the requested task is already complete, finish normally now.";
+const COMPACTION_FAILED_CONTINUATION =
+	"Automatic context compaction failed after a finished tool turn. Continue the original task from the current context. Do not repeat completed work or tool calls. If the requested task is already complete, finish normally now.";
 
 type GuardPhase = "idle" | "stopped" | "compacting";
 
@@ -263,7 +265,7 @@ export default function aluSolTuner(pi: ExtensionAPI): void {
 		activeSessionId = undefined;
 	};
 
-	const continueAfterCompaction = (ctx: ExtensionContext) => {
+	const continueAgentLoop = (ctx: ExtensionContext, content: string, status: string) => {
 		const host = getPatchHost();
 		if (!activeSessionId || host?.controllers.get(activeSessionId) !== controller) return;
 		resetCycle();
@@ -271,13 +273,13 @@ export default function aluSolTuner(pi: ExtensionAPI): void {
 		pi.sendMessage(
 			{
 				customType: EXTENSION_ID,
-				content: CONTINUATION_MESSAGE,
+				content,
 				display: false,
 				details: { threshold: guardThreshold, continuation: continuationCount },
 			},
 			{ triggerTurn: true },
 		);
-		setStatus(ctx, `阿露 Sol 调教 · ${formatTokens(guardThreshold)} · 已续跑 ${continuationCount}`);
+		setStatus(ctx, `阿露 Sol 调教 · ${formatTokens(guardThreshold)} · ${status} ${continuationCount}`);
 	};
 
 	pi.on("session_start", (_event, ctx) => {
@@ -335,7 +337,7 @@ export default function aluSolTuner(pi: ExtensionAPI): void {
 		if (!patch.active || phase !== "stopped") return;
 
 		if (nativeCompacted) {
-			continueAfterCompaction(ctx);
+			continueAgentLoop(ctx, COMPACTION_COMPLETED_CONTINUATION, "已续跑");
 			return;
 		}
 
@@ -345,14 +347,13 @@ export default function aluSolTuner(pi: ExtensionAPI): void {
 		ctx.compact({
 			onComplete: () => {
 				if (phase !== "compacting") return;
-				continueAfterCompaction(ctx);
+				continueAgentLoop(ctx, COMPACTION_COMPLETED_CONTINUATION, "已续跑");
 			},
 			onError: (error) => {
 				if (phase !== "compacting") return;
 				lastError = error.message;
-				resetCycle();
-				setStatus(ctx, "阿露 Sol 调教 · 压缩失败");
-				ctx.ui.notify(`阿露 Sol 调教已停止：压缩失败 — ${error.message}`, "error");
+				ctx.ui.notify(`阿露 Sol 调教压缩失败，已继续任务 — ${error.message}`, "error");
+				continueAgentLoop(ctx, COMPACTION_FAILED_CONTINUATION, "压缩失败后已续跑");
 			},
 		});
 	});
