@@ -1,9 +1,14 @@
 {
-  "name": "pi-sol-mid-turn-guard",
+  "name": "pi-alu-sol-tuner",
   "version": "0.1.0",
   "private": true,
-  "description": "在超长工具回合后让 Pi 先压缩上下文，再自动继续任务",
+  "description": "阿露的 Sol 调教插件：工程纪律注入与超长工具回合上下文保护",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aruru-project/pi-alu-sol-tuner.git"
+  },
+  "homepage": "https://github.com/aruru-project/pi-alu-sol-tuner",
   "type": "module",
   "keywords": [
     "pi-package"

@@ -1,97 +1,111 @@
-# Pi Sol 单回合上下文保护
+# 阿露的 Sol 调教插件
 
-这是一个给 [Pi](https://github.com/earendil-works/pi-mono) 用的小扩展，主要解决一个很具体的问题：
+一个 Pi 扩展，提供两项能力：
 
-当 `gpt-5.6-sol` 在同一回合里连续调用很多工具时，上下文可能已经很大，但 Pi 还没机会进入正常的自动压缩流程。这个扩展会在一次工具调用结束后找机会停下来，先让 Pi 压缩上下文，再自动接着完成原来的任务。
+- 为所有模型注入工程纪律，并为 `*-sol` 模型追加 Sol 专项纪律；
+- 当 `gpt-5.6-sol` 在工具回合后超过 token 阈值时，先停止、压缩上下文，再自动继续任务。
 
-## 它什么时候会触发
+如果 Pi 已原生提供同类的回合后停止能力，插件会自动让位。
 
-以下条件必须同时满足：
+## 配置
 
-- 当前模型是 `gpt-5.6-sol`；
-- 模型刚完成了一次包含工具结果的响应；
-- 本次响应报告的 token 数超过 `250,000`；
-- 用户没有新消息正在排队；
-- 扩展当前没有在处理上一轮压缩。
+插件从本次运行的当前工作目录开始，逐层向文件系统根目录查找各层的 `<目录>/.pi/alu-sol.json`。第一个找到的文件（也就是最近的文件）生效；找到后立即停止查找，不与更高层配置合并。若始终未找到，则使用默认值。
 
-触发后，底部状态栏会显示压缩状态。压缩完成后，扩展会发送一条不可见的继续消息，让模型从压缩后的上下文继续工作。
+例如：
 
-如果 Pi 自己已经提供了同类的 `shouldStopAfterTurn` 能力，扩展会自动让位，不重复接管。
+```text
+project/
+├── .pi/alu-sol.json          # 项目配置
+└── packages/app/
+    ├── .pi/alu-sol.json      # 更近的嵌套配置
+    └── src/                  # 当前工作目录
+```
+
+从 `project/packages/app/src` 运行时，使用 `packages/app/.pi/alu-sol.json`，不再读取项目配置。
+
+最近的文件若不是有效 JSON，整份配置使用默认值，不会继续向上查找。未知字段会被忽略；某个字段的值无效时，只有该字段改用默认值，其他有效字段仍然生效。配置文件会在每次代理运行前重新读取，因此修改会从下一条消息或下一次运行起生效，无需重新安装或执行 `/reload`。
+
+配置文件可包含：
+
+```json
+{
+  "disable": ["sol-discipline"],
+  "guardThreshold": 250000
+}
+```
+
+`disable` 只控制纪律提示词注入，支持：
+
+- `engineering-discipline`：不注入通用工程纪律；
+- `sol-discipline`：不注入 Sol 专项纪律；
+- `all` 或 `*`：两种纪律都不注入。
+
+`all` 和 `*` 也不会关闭上下文保护。`guardThreshold` 只控制上下文保护的触发阈值，必须是正整数；缺失或无效时使用 `250000`。
 
 ## 安装
 
-### 先临时试用
+从 GitHub 安装：
 
-在仓库目录中运行：
+```bash
+pi install https://github.com/aruru-project/pi-alu-sol-tuner
+```
+
+也可克隆后安装本地仓库：
+
+```bash
+git clone https://github.com/aruru-project/pi-alu-sol-tuner.git
+cd pi-alu-sol-tuner
+pi install "$(pwd)"
+```
+
+安装或更新后，在 Pi 中运行 `/reload`。状态栏会显示当前保护阈值。
+
+临时试用本地源码：
 
 ```bash
 pi -e ./index.ts
 ```
 
-这只对当前这次 Pi 运行生效。
+## 从旧版迁移
 
-### 安装到当前用户
+GitHub 仓库已从 `aruru-project/pi-sol-temp-ext` 更名为 `aruru-project/pi-alu-sol-tuner`。旧链接可能会重定向，但安装新版前仍应移除已安装的 `pi-sol-temp-ext` 或 `sol-mid-turn-guard`。旧 guard 与新版插件会挂接同一条保护路径，不能同时加载，否则可能冲突。
 
-最直接的方式是复制扩展文件：
-
-```bash
-mkdir -p ~/.pi/agent/extensions/sol-mid-turn-guard
-cp index.ts ~/.pi/agent/extensions/sol-mid-turn-guard/index.ts
-```
-
-然后在 Pi 里运行：
-
-```text
-/reload
-```
-
-加载成功后，底部会显示 `Sol guard 250k`。
-
-也可以把整个仓库作为本地 Pi 包安装：
-
-```bash
-pi install "$(pwd)"
-```
+1. 运行 `pi list`，找到旧包，并用列表中显示的完整来源或路径执行 `pi remove`；不要自行改写来源。
+2. 如果旧版是手动复制的，删除 `~/.pi/agent/extensions/sol-mid-turn-guard`。
+3. 在 Pi 中运行 `/reload`。
+4. 运行 `pi install https://github.com/aruru-project/pi-alu-sol-tuner` 安装新版。
+5. 再次运行 `/reload`。
 
 ## 查看状态
 
-在 Pi 里运行：
+在 Pi 中运行：
 
 ```text
-/sol-guard-status
+/alu-sol-status
 ```
 
-它会告诉你扩展是否启用、当前阶段、触发阈值，以及已经自动续跑了多少次。
+命令会显示插件是否运行、当前保护阶段、阈值和自动续跑次数。
 
 ## 验证
 
-测试脚本需要系统里已经全局安装 Pi：
+系统中已全局安装 Pi 时运行：
 
 ```bash
 npm run smoke
 ```
 
-测试会检查多会话隔离、停止与续跑、压缩失败处理，以及 `/reload` 后不会重复打补丁。
+测试覆盖纪律注入与关闭、默认及自定义阈值、停止/压缩/续跑、多会话隔离和重载安全。
 
-## 卸载
+## 移除
 
-如果是手动复制安装：
+先运行 `pi list`，再将列表中显示的完整来源或路径原样传给 `pi remove`：
 
 ```bash
-rm -rf ~/.pi/agent/extensions/sol-mid-turn-guard
+pi list
+pi remove 'pi list 显示的完整来源或路径'
 ```
 
-如果是通过 `pi install` 安装，请用 `pi list` 查看记录，再用 `pi remove` 删除对应的包。卸载后运行一次 `/reload`。
-
-这个扩展不会修改项目或全局的 `settings.json`；通过 `pi install` 安装时，Pi 自己会记录包路径。
-
-## 注意事项
-
-- 模型名和 `250,000` 阈值目前写在代码里，不能通过配置文件修改。
-- 它只处理 `gpt-5.6-sol`，不是通用的上下文溢出保护。
-- 它复用了 Pi 的正常压缩流程，因此压缩本身会产生一次额外的模型调用和相应 token 消耗。
-- 它会包装 Pi 的底层 `Agent.createLoopConfig`。代码会在运行时检查结构，但 Pi 升级后仍有可能失效；遇到问题时先卸载扩展。
-- Pi 扩展拥有与 Pi 进程相同的系统权限。安装任何第三方扩展前，都应该先看一遍源码。
+移除后运行 `/reload`。
 
 ## License
 

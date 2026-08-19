@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -16,8 +16,10 @@ try {
 		pathToFileURL(join(piRoot, "node_modules/@earendil-works/pi-agent-core/dist/index.js")),
 	);
 
-	const context = (sessionId, calls) => ({
+	const context = (sessionId, calls, cwd, model) => ({
 		hasUI: false,
+		cwd,
+		model,
 		sessionManager: { getSessionId: () => sessionId },
 		ui: { notify() {}, setStatus() {} },
 		hasPendingMessages: () => false,
@@ -28,17 +30,24 @@ try {
 		},
 	});
 	const emit = async (extension, eventName, ctx, extra = {}) => {
+		let result;
 		for (const handler of extension.handlers.get(eventName) ?? []) {
-			await handler({ type: eventName, ...extra }, ctx);
+			const next = await handler({ type: eventName, ...extra }, ctx);
+			if (next !== undefined) result = next;
 		}
+		return result;
 	};
-	const loadRuntime = async (sessionId) => {
-		const result = await loader.discoverAndLoadExtensions([extensionPath], projectRoot, tempAgentDir);
+	const loadRuntime = async (
+		sessionId,
+		cwd = projectRoot,
+		model = { provider: "openai-codex", id: "gpt-5.6-sol" },
+	) => {
+		const result = await loader.discoverAndLoadExtensions([extensionPath], cwd, tempAgentDir);
 		if (result.errors.length > 0) throw new Error(JSON.stringify(result.errors));
 		const extension = result.extensions[0];
 		const calls = { compactions: 0, compactError: false, messages: [] };
 		result.runtime.sendMessage = (message, options) => calls.messages.push({ message, options });
-		const ctx = context(sessionId, calls);
+		const ctx = context(sessionId, calls, cwd, model);
 		await emit(extension, "session_start", ctx);
 		return { extension, ctx, calls };
 	};
@@ -88,6 +97,36 @@ try {
 	if (typeof configB.shouldStopAfterTurn !== "function") throw new Error("runtime B hook was not installed");
 	if (Agent.prototype.createLoopConfig !== wrapper) throw new Error("runtime B stacked the prototype wrapper");
 
+	const promptResult = await emit(runtimeB.extension, "before_agent_start", runtimeB.ctx, {
+		systemPrompt: "base prompt",
+		systemPromptOptions: { cwd: projectRoot },
+	});
+	if (!promptResult?.systemPrompt.includes("## 全局工程底线（机器级注入；项目明文规则在其领域内优先）")) {
+		throw new Error("engineering discipline was not injected by default");
+	}
+	if (!promptResult.systemPrompt.includes("## GPT-5.6 Sol 专项纪律（按模型注入）")) {
+		throw new Error("Sol discipline was not injected for a Sol model");
+	}
+	runtimeB.ctx.model = { provider: "openai-codex", id: "other-model" };
+	const nonSolPrompt = await emit(runtimeB.extension, "before_agent_start", runtimeB.ctx, {
+		systemPrompt: "base prompt",
+		systemPromptOptions: { cwd: projectRoot },
+	});
+	if (!nonSolPrompt?.systemPrompt.includes("## 全局工程底线")) {
+		throw new Error("engineering discipline was gated off for a non-Sol model");
+	}
+	if (nonSolPrompt.systemPrompt.includes("## GPT-5.6 Sol 专项纪律")) {
+		throw new Error("Sol discipline was injected for a non-Sol model");
+	}
+	runtimeB.ctx.model = { provider: "openai-codex", id: "gpt-5.6-sol" };
+	const markedPrompt = await emit(runtimeB.extension, "before_agent_start", runtimeB.ctx, {
+		systemPrompt: "base prompt with GPT-5.6 Sol already present",
+		systemPromptOptions: { cwd: projectRoot },
+	});
+	if (markedPrompt?.systemPrompt.includes("## GPT-5.6 Sol 专项纪律")) {
+		throw new Error("Sol discipline marker did not prevent duplicate injection");
+	}
+
 	if (await configB.shouldStopAfterTurn(turn(message("other-model", 300_000)))) {
 		throw new Error("non-Sol model was stopped");
 	}
@@ -121,6 +160,49 @@ try {
 		throw new Error("runtime B compaction error did not stop without continuation");
 	}
 
+	const configuredRoot = join(tempAgentDir, "configured-project");
+	const configuredCwd = join(configuredRoot, "nested", "worktree");
+	const configDir = join(configuredRoot, ".pi");
+	const configFile = join(configDir, "alu-sol.json");
+	mkdirSync(configuredCwd, { recursive: true });
+	mkdirSync(configDir, { recursive: true });
+	writeFileSync(configFile, JSON.stringify({ disable: ["all"], guardThreshold: 100 }));
+	const configuredRuntime = await loadRuntime("runtime-configured", configuredCwd);
+	const disabledPrompt = await emit(configuredRuntime.extension, "before_agent_start", configuredRuntime.ctx, {
+		systemPrompt: "base prompt",
+		systemPromptOptions: { cwd: configuredCwd },
+	});
+	if (disabledPrompt !== undefined) throw new Error("disable=all did not suppress discipline injection");
+	const configuredAgent = new Agent({ sessionId: "runtime-configured" });
+	const configuredLoop = configuredAgent.createLoopConfig();
+	if (!(await configuredLoop.shouldStopAfterTurn(turn(message("gpt-5.6-sol", 101))))) {
+		throw new Error("configured guard threshold did not take effect independently of disable=all");
+	}
+	await emit(configuredRuntime.extension, "agent_settled", configuredRuntime.ctx);
+	if (configuredRuntime.calls.compactions !== 1 || configuredRuntime.calls.messages.length !== 1) {
+		throw new Error("configured guard did not compact and resume");
+	}
+
+	writeFileSync(configFile, JSON.stringify({ disable: ["sol-discipline"], guardThreshold: 100 }));
+	const floorOnlyPrompt = await emit(configuredRuntime.extension, "before_agent_start", configuredRuntime.ctx, {
+		systemPrompt: "base prompt",
+		systemPromptOptions: { cwd: configuredCwd },
+	});
+	if (!floorOnlyPrompt?.systemPrompt.includes("## 全局工程底线")
+		|| floorOnlyPrompt.systemPrompt.includes("## GPT-5.6 Sol 专项纪律")) {
+		throw new Error("sol-discipline disable category did not preserve only engineering discipline");
+	}
+	writeFileSync(configFile, JSON.stringify({ disable: ["engineering-discipline"], guardThreshold: 100 }));
+	const solOnlyPrompt = await emit(configuredRuntime.extension, "before_agent_start", configuredRuntime.ctx, {
+		systemPrompt: "base prompt",
+		systemPromptOptions: { cwd: configuredCwd },
+	});
+	if (solOnlyPrompt?.systemPrompt.includes("## 全局工程底线")
+		|| !solOnlyPrompt?.systemPrompt.includes("## GPT-5.6 Sol 专项纪律")) {
+		throw new Error("engineering-discipline disable category did not preserve only Sol discipline");
+	}
+	await emit(configuredRuntime.extension, "session_shutdown", configuredRuntime.ctx, { reason: "shutdown" });
+
 	// Replacement registers first; stale shutdown from the old B must not delete it.
 	const replacementB = await loadRuntime("runtime-b");
 	await emit(runtimeB.extension, "session_shutdown", runtimeB.ctx, { reason: "reload" });
@@ -135,7 +217,7 @@ try {
 	await emit(replacementB.extension, "session_shutdown", replacementB.ctx, { reason: "shutdown" });
 
 	console.log(
-		"smoke ok: dual-runtime routing, independent stop/compact/resume, compact error, stale cleanup, reload idempotence",
+		"smoke ok: discipline injection/gating/disable, default/configured thresholds, stop/compact/resume, dual-runtime routing, compact error, stale cleanup, reload idempotence",
 	);
 } finally {
 	rmSync(tempAgentDir, { recursive: true, force: true });
