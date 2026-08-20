@@ -23,7 +23,14 @@ try {
 		cwd,
 		model,
 		sessionManager: { getSessionId: () => sessionId },
-		ui: { notify() {}, setStatus() {} },
+		ui: {
+			notify() {},
+			setStatus(key, text) {
+				calls.statusChanges.push({ key, text });
+				if (text === undefined) calls.extensionStatus.delete(key);
+				else calls.extensionStatus.set(key, text);
+			},
+		},
 		hasPendingMessages: () => false,
 		compact(options) {
 			calls.compactions++;
@@ -47,7 +54,13 @@ try {
 		const result = await loader.discoverAndLoadExtensions([extensionPath], cwd, tempAgentDir);
 		if (result.errors.length > 0) throw new Error(JSON.stringify(result.errors));
 		const extension = result.extensions[0];
-		const calls = { compactions: 0, compactError: false, messages: [] };
+		const calls = {
+			compactions: 0,
+			compactError: false,
+			messages: [],
+			statusChanges: [],
+			extensionStatus: new Map(),
+		};
 		result.runtime.sendMessage = (message, options) => calls.messages.push({ message, options });
 		const ctx = context(sessionId, calls, cwd, model);
 		await emit(extension, "session_start", ctx);
@@ -94,6 +107,9 @@ try {
 
 	// Runtime B is created later; it must not replace A's controller.
 	const runtimeB = await loadRuntime("runtime-b");
+	if (runtimeB.calls.extensionStatus.has("alu-sol-tuner")) {
+		throw new Error("idle tuner occupied the extension status area");
+	}
 	const agentB = new Agent({ sessionId: "runtime-b" });
 	const configB = agentB.createLoopConfig();
 	if (typeof configB.shouldStopAfterTurn !== "function") throw new Error("runtime B hook was not installed");
@@ -151,6 +167,12 @@ try {
 	await emit(runtimeA.extension, "agent_settled", runtimeA.ctx);
 	if (runtimeA.calls.compactions !== 1 || runtimeA.calls.messages.length !== 1) {
 		throw new Error("runtime A did not compact and resume through its own runtime");
+	}
+	if (!runtimeA.calls.statusChanges.some(({ text }) => text?.includes("正在压缩"))) {
+		throw new Error("active compaction was not exposed as a transient status");
+	}
+	if (runtimeA.calls.extensionStatus.has("alu-sol-tuner")) {
+		throw new Error("completed compaction left a persistent extension status");
 	}
 
 	if (!(await configB.shouldStopAfterTurn(turn(message("gpt-5.6-sol", 250_001))))) {

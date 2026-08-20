@@ -234,12 +234,13 @@ export default function aluSolTuner(pi: ExtensionAPI): void {
 			if (nativeHookDetected) return;
 			nativeHookDetected = true;
 			resetCycle();
-			if (latestContext) setStatus(latestContext, "阿露 Sol 调教 · Pi 原生保护");
+			if (latestContext) setStatus(latestContext, undefined);
 			notify("阿露 Sol 调教已让位：Pi 已提供回合后停止能力", "info");
 		},
 		reportShimError(error) {
 			lastError = error instanceof Error ? error.message : String(error);
 			resetCycle();
+			if (latestContext) setStatus(latestContext, undefined);
 			notify(`阿露 Sol 调教出错：${lastError}`, "error");
 		},
 	};
@@ -266,7 +267,7 @@ export default function aluSolTuner(pi: ExtensionAPI): void {
 		activeSessionId = undefined;
 	};
 
-	const continueAgentLoop = (ctx: ExtensionContext, content: string, status: string) => {
+	const continueAgentLoop = (ctx: ExtensionContext, content: string) => {
 		const host = getPatchHost();
 		if (!activeSessionId || host?.controllers.get(activeSessionId) !== controller) return;
 		resetCycle();
@@ -280,7 +281,7 @@ export default function aluSolTuner(pi: ExtensionAPI): void {
 			},
 			{ triggerTurn: true },
 		);
-		setStatus(ctx, `阿露 Sol 调教 · ${formatTokens(guardThreshold)} · ${status} ${continuationCount}`);
+		setStatus(ctx, undefined);
 	};
 
 	pi.on("session_start", (_event, ctx) => {
@@ -288,10 +289,8 @@ export default function aluSolTuner(pi: ExtensionAPI): void {
 		guardThreshold = readConfig(ctx.cwd).guardThreshold;
 		resetCycle();
 		lastError = undefined;
-		if (patch.active && registerController(ctx)) {
-			setStatus(ctx, `阿露 Sol 调教 · ${formatTokens(guardThreshold)}`);
-		} else {
-			setStatus(ctx, "阿露 Sol 调教 · 已停用");
+		setStatus(ctx, undefined);
+		if (!patch.active || !registerController(ctx)) {
 			ctx.ui.notify(`阿露 Sol 调教已停用：${patch.reason ?? "无法注册会话保护"}`, "error");
 		}
 	});
@@ -338,7 +337,7 @@ export default function aluSolTuner(pi: ExtensionAPI): void {
 		if (!patch.active || phase !== "stopped") return;
 
 		if (nativeCompacted) {
-			continueAgentLoop(ctx, COMPACTION_COMPLETED_CONTINUATION, "已续跑");
+			continueAgentLoop(ctx, COMPACTION_COMPLETED_CONTINUATION);
 			return;
 		}
 
@@ -348,13 +347,13 @@ export default function aluSolTuner(pi: ExtensionAPI): void {
 		ctx.compact({
 			onComplete: () => {
 				if (phase !== "compacting") return;
-				continueAgentLoop(ctx, COMPACTION_COMPLETED_CONTINUATION, "已续跑");
+				continueAgentLoop(ctx, COMPACTION_COMPLETED_CONTINUATION);
 			},
 			onError: (error) => {
 				if (phase !== "compacting") return;
 				lastError = error.message;
 				ctx.ui.notify(`阿露 Sol 调教压缩失败，已继续任务 — ${error.message}`, "error");
-				continueAgentLoop(ctx, COMPACTION_FAILED_CONTINUATION, "压缩失败后已续跑");
+				continueAgentLoop(ctx, COMPACTION_FAILED_CONTINUATION);
 			},
 		});
 	});
