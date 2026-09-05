@@ -6,8 +6,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const extensionPath = join(projectRoot, "index.ts");
-const globalNodeModules = execFileSync("npm", ["root", "-g"], { encoding: "utf8" }).trim();
-const piRoot = join(globalNodeModules, "@earendil-works", "pi-coding-agent");
+const piRoot = process.env.PI_CODING_AGENT_ROOT
+	?? join(execFileSync("npm", ["root", "-g"], { encoding: "utf8" }).trim(), "@earendil-works", "pi-coding-agent");
 const tempAgentDir = mkdtempSync(join(tmpdir(), "sol-guard-smoke-"));
 const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 process.env.PI_CODING_AGENT_DIR = tempAgentDir;
@@ -146,7 +146,7 @@ try {
 	}
 
 	if (await configB.shouldStopAfterTurn(turn(message("other-model", 300_000)))) {
-		throw new Error("non-Sol model was stopped");
+		throw new Error("unsupported model was stopped");
 	}
 	if (await configB.shouldStopAfterTurn(turn(message("gpt-5.6-sol", 250_000)))) {
 		throw new Error("250k boundary should not stop");
@@ -161,12 +161,21 @@ try {
 	}
 	agentB.clearAllQueues();
 
-	if (!(await configA.shouldStopAfterTurn(turn(message("gpt-5.6-sol", 250_001))))) {
-		throw new Error("runtime A lost its controller after runtime B started");
-	}
-	await emit(runtimeA.extension, "agent_settled", runtimeA.ctx);
-	if (runtimeA.calls.compactions !== 1 || runtimeA.calls.messages.length !== 1) {
-		throw new Error("runtime A did not compact and resume through its own runtime");
+	// Sol and Astra tool turns above the default threshold compact and resume the task.
+	for (const [index, model] of ["gpt-5.6-sol", "gpt-6-astra"].entries()) {
+		runtimeA.ctx.model = { provider: "openai-codex", id: model };
+		if (!(await configA.shouldStopAfterTurn(turn(message(model, 250_001))))) {
+			throw new Error(`${model} did not stop above 250k after runtime B started`);
+		}
+		await emit(runtimeA.extension, "agent_settled", runtimeA.ctx);
+		const continuation = runtimeA.calls.messages[index];
+		if (runtimeA.calls.compactions !== index + 1
+			|| runtimeA.calls.messages.length !== index + 1
+			|| continuation?.options?.triggerTurn !== true
+			|| !continuation.message?.content?.includes("compaction completed")
+			|| continuation.message?.details?.threshold !== 250_000) {
+			throw new Error(`${model} did not compact and resume through its own runtime`);
+		}
 	}
 	if (!runtimeA.calls.statusChanges.some(({ text }) => text?.includes("正在压缩"))) {
 		throw new Error("active compaction was not exposed as a transient status");
@@ -265,7 +274,7 @@ try {
 	await emit(replacementB.extension, "session_shutdown", replacementB.ctx, { reason: "shutdown" });
 
 	console.log(
-		"smoke ok: discipline injection/gating/disable, default/configured thresholds, stop/compact/resume, dual-runtime routing, compact error, stale cleanup, reload idempotence",
+		"smoke ok: discipline injection/gating/disable, default/configured thresholds, Sol/Astra stop/compact/resume, dual-runtime routing, compact error, stale cleanup, reload idempotence",
 	);
 } finally {
 	if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;

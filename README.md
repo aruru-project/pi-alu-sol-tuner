@@ -3,7 +3,7 @@
 一个 Pi 扩展，提供两项能力：
 
 - 为所有模型注入工程纪律，并为 `*-sol` 模型追加 Sol 专项纪律；
-- 当 `gpt-5.6-sol` 在工具回合后超过 token 阈值时，先停止、压缩上下文，再自动继续任务。
+- 当 `gpt-5.6-sol` 或 `gpt-6-astra` 在工具回合后超过 token 阈值时，先停止、压缩上下文，再自动继续任务；仅匹配这两个准确模型 ID。
 
 如果 Pi 已原生提供同类的回合后停止能力，插件会自动让位。
 
@@ -28,7 +28,7 @@
 - `sol-discipline`：不注入 Sol 专项纪律；
 - `all` 或 `*`：两种纪律都不注入。
 
-`all` 和 `*` 也不会关闭上下文保护。`guardThreshold` 只控制上下文保护的触发阈值，必须是正整数；缺失或无效时使用 `250000`。
+`all` 和 `*` 也不会关闭上下文保护。`guardThreshold` 只控制上下文保护的触发阈值，必须是正整数；缺失或无效时使用 `250000`。Sol 和 Astra 共用此阈值，在工具回合完成后检查用量，不预测下一回合的预算，因此仍可能跨过模型的加价线。
 
 ## 安装
 
@@ -82,7 +82,13 @@ GitHub 仓库已从 `aruru-project/pi-sol-temp-ext` 更名为 `aruru-project/pi-
 npm run smoke
 ```
 
-测试覆盖纪律注入与关闭、默认及自定义阈值、停止/压缩/续跑、多会话隔离和重载安全。
+使用 Dock 内嵌或其他非全局安装的 Pi 时，可指定包目录：
+
+```bash
+PI_CODING_AGENT_ROOT=/path/to/node_modules/@earendil-works/pi-coding-agent npm run smoke
+```
+
+测试覆盖纪律注入与关闭、默认及自定义阈值、Sol/Astra 停止/压缩/续跑、多会话隔离和重载安全。smoke 使用真实 Pi 扩展加载器及 Agent 回合钩子，压缩与续跑消息发送使用测试替身，不调用模型服务。
 
 ## 移除
 

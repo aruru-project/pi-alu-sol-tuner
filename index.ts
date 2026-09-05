@@ -11,7 +11,7 @@ import {
 
 const EXTENSION_ID = "alu-sol-tuner";
 const STATUS_KEY = EXTENSION_ID;
-const TARGET_MODEL_ID = "gpt-5.6-sol";
+const TARGET_MODEL_IDS = new Set(["gpt-5.6-sol", "gpt-6-astra"]);
 const DEFAULT_GUARD_THRESHOLD = 250_000;
 const PATCH_KEY = Symbol.for("pi.sol-mid-turn-guard.patch.v2");
 const LEGACY_PATCH_KEY = Symbol.for("pi.sol-mid-turn-guard.patch.v1");
@@ -217,7 +217,7 @@ export default function aluSolTuner(pi: ExtensionAPI): void {
 		generation,
 		async shouldStop(agent, turn) {
 			if (phase !== "idle" || nativeHookDetected) return false;
-			if (turn.message.model !== TARGET_MODEL_ID) return false;
+			if (!TARGET_MODEL_IDS.has(turn.message.model)) return false;
 			if (turn.message.stopReason !== "toolUse" || turn.toolResults.length === 0) return false;
 
 			const tokens = usageTokens(turn);
