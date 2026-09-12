@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { runLifecycle } from "./lifecycle.mjs";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -8,7 +9,7 @@ const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const extensionPath = join(projectRoot, "index.ts");
 const piRoot = process.env.PI_CODING_AGENT_ROOT
 	?? join(execFileSync("npm", ["root", "-g"], { encoding: "utf8" }).trim(), "@earendil-works", "pi-coding-agent");
-const tempAgentDir = mkdtempSync(join(tmpdir(), "sol-guard-smoke-"));
+const tempAgentDir = mkdtempSync(join(tmpdir(), "alu-agent-smoke-"));
 const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 process.env.PI_CODING_AGENT_DIR = tempAgentDir;
 
@@ -100,6 +101,9 @@ try {
 	});
 
 	const runtimeA = await loadRuntime("runtime-a");
+	if ([...runtimeA.extension.commands.keys()].join(",") !== "alu-agent") {
+		throw new Error("the sole command entry must be alu-agent");
+	}
 	const wrapper = Agent.prototype.createLoopConfig;
 	const agentA = new Agent({ sessionId: "runtime-a" });
 	const configA = agentA.createLoopConfig();
@@ -187,6 +191,8 @@ try {
 	if (!(await configB.shouldStopAfterTurn(turn(message("gpt-5.6-sol", 250_001))))) {
 		throw new Error("runtime B did not stop independently");
 	}
+	// Turning off after a guard stop must still finish the pending continuation.
+	await runtimeB.extension.commands.get("alu-agent").handler("off", runtimeB.ctx);
 	runtimeB.calls.compactError = true;
 	await emit(runtimeB.extension, "agent_settled", runtimeB.ctx);
 	if (runtimeB.calls.compactions !== 1
@@ -196,8 +202,9 @@ try {
 		throw new Error("runtime B compaction error did not continue the agent loop");
 	}
 
-	// A failed plugin-owned compaction resumes normal work. The next successful
-	// tool turn must be eligible for another compaction attempt.
+	// A failed plugin-owned compaction resumes normal work. Re-enabling allows
+	// the next successful tool turn to attempt compaction again.
+	await runtimeB.extension.commands.get("alu-agent").handler("on", runtimeB.ctx);
 	if (!(await configB.shouldStopAfterTurn(turn(message("gpt-5.6-sol", 250_001))))) {
 		throw new Error("runtime B did not retry compaction after resumed tool work");
 	}
@@ -212,9 +219,9 @@ try {
 
 	const configuredCwd = join(tempAgentDir, "configured-project");
 	const configDir = join(configuredCwd, ".pi");
-	const configFile = join(configDir, "alu-sol.json");
+	const configFile = join(configDir, "alu-agent.json");
 	mkdirSync(configDir, { recursive: true });
-	writeFileSync(join(tempAgentDir, "alu-sol.json"), JSON.stringify({
+	writeFileSync(join(tempAgentDir, "alu-agent.json"), JSON.stringify({
 		disable: ["sol-discipline"],
 		guardThreshold: 100,
 	}));
@@ -235,7 +242,12 @@ try {
 		throw new Error("configured guard did not compact and resume");
 	}
 
-	writeFileSync(configFile, JSON.stringify({ disable: [123], guardThreshold: 200 }));
+	writeFileSync(configFile, JSON.stringify({ disable: [123], guardEnabled: false, guardThreshold: 200 }));
+	const unchangedPrompt = await emit(configuredRuntime.extension, "before_agent_start", configuredRuntime.ctx, {
+		systemPrompt: "base prompt",
+	});
+	if (unchangedPrompt !== undefined) throw new Error("discipline config hot-loaded before reinitialization");
+	await emit(configuredRuntime.extension, "session_start", configuredRuntime.ctx);
 	const floorOnlyPrompt = await emit(configuredRuntime.extension, "before_agent_start", configuredRuntime.ctx, {
 		systemPrompt: "base prompt",
 		systemPromptOptions: { cwd: configuredCwd },
@@ -246,10 +258,17 @@ try {
 	}
 	const overrideAgent = new Agent({ sessionId: "runtime-configured" });
 	const overrideLoop = overrideAgent.createLoopConfig();
-	if (await overrideLoop.shouldStopAfterTurn(turn(message("gpt-5.6-sol", 150)))) {
-		throw new Error("project guard threshold did not override the global field");
+	if (!(await overrideLoop.shouldStopAfterTurn(turn(message("gpt-5.6-sol", 150))))) {
+		throw new Error("project guard fields overrode global defaults");
+	}
+	// Pi's own automatic compaction has already completed: resume without a second compaction.
+	await emit(configuredRuntime.extension, "session_compact", configuredRuntime.ctx, { reason: "threshold" });
+	await emit(configuredRuntime.extension, "agent_settled", configuredRuntime.ctx);
+	if (configuredRuntime.calls.compactions !== 1 || configuredRuntime.calls.messages.length !== 2) {
+		throw new Error("native compaction did not resume directly");
 	}
 	writeFileSync(configFile, JSON.stringify({ disable: ["engineering-discipline"], guardThreshold: 100 }));
+	await emit(configuredRuntime.extension, "session_start", configuredRuntime.ctx);
 	const solOnlyPrompt = await emit(configuredRuntime.extension, "before_agent_start", configuredRuntime.ctx, {
 		systemPrompt: "base prompt",
 		systemPromptOptions: { cwd: configuredCwd },
@@ -274,8 +293,9 @@ try {
 	await emit(replacementB.extension, "session_shutdown", replacementB.ctx, { reason: "shutdown" });
 
 	console.log(
-		"smoke ok: discipline injection/gating/disable, default/configured thresholds, Sol/Astra stop/compact/resume, dual-runtime routing, compact error, stale cleanup, reload idempotence",
+		"smoke ok: discipline injection/gating/snapshot, global-only guard defaults, Sol/Astra stop/compact/resume, native compaction, compact error/retry, dual-runtime routing, stale cleanup, reload idempotence",
 	);
+	await runLifecycle({ piRoot, tempAgentDir, extensionPath, turn, message });
 } finally {
 	if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 	else process.env.PI_CODING_AGENT_DIR = previousAgentDir;

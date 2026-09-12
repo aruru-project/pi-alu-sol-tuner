@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Agent, type AgentLoopConfig, type ShouldStopAfterTurnContext } from "@earendil-works/pi-agent-core";
 import {
@@ -77,34 +77,71 @@ interface LegacyPatchHost {
 interface AluSolConfig {
 	disabled: Set<string>;
 	guardThreshold: number;
+	guardEnabled: boolean;
 }
 
 function readConfig(cwd: string): AluSolConfig {
 	const config: AluSolConfig = {
 		disabled: new Set(),
 		guardThreshold: DEFAULT_GUARD_THRESHOLD,
+		guardEnabled: true,
 	};
-	for (const file of [
-		join(getAgentDir(), "alu-sol.json"),
-		join(cwd, CONFIG_DIR_NAME, "alu-sol.json"),
-	]) {
+	for (const [layer, dir] of [getAgentDir(), join(cwd, CONFIG_DIR_NAME)].entries()) {
 		try {
-			const parsed = JSON.parse(readFileSync(file, "utf8")) as {
+			const parsed = JSON.parse(readFileSync(join(dir, "alu-agent.json"), "utf8")) as {
 				disable?: unknown;
 				guardThreshold?: unknown;
+				guardEnabled?: unknown;
 			};
 			if (Array.isArray(parsed?.disable) && parsed.disable.every((item) => typeof item === "string")) {
 				config.disabled = new Set(parsed.disable);
 			}
-			const threshold = parsed?.guardThreshold;
-			if (typeof threshold === "number" && Number.isInteger(threshold) && threshold > 0) {
-				config.guardThreshold = threshold;
+			// Project overrides apply only to discipline, never to guard defaults.
+			if (layer === 0) {
+				const threshold = parsed?.guardThreshold;
+				if (typeof threshold === "number" && Number.isSafeInteger(threshold) && threshold > 0) {
+					config.guardThreshold = threshold;
+				}
+				if (typeof parsed?.guardEnabled === "boolean") config.guardEnabled = parsed.guardEnabled;
 			}
 		} catch {
 			// Missing and malformed layers are ignored independently.
 		}
 	}
 	return config;
+}
+
+function saveGuardDefault(update: { guardEnabled: boolean } | { guardThreshold: number }): void {
+	const dir = getAgentDir();
+	const file = join(dir, "alu-agent.json");
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(readFileSync(file, "utf8"));
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		parsed = {};
+	}
+	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+		throw new Error("全局配置必须是 JSON 对象");
+	}
+	mkdirSync(dir, { recursive: true });
+	const tempDir = mkdtempSync(join(dir, ".alu-agent-"));
+	try {
+		const tempFile = join(tempDir, "alu-agent.json");
+		writeFileSync(tempFile, `${JSON.stringify({ ...parsed, ...update }, null, 2)}\n`, { mode: 0o600 });
+		renameSync(tempFile, file);
+	} finally {
+		rmSync(tempDir, { recursive: true, force: true });
+	}
+}
+
+function parseThreshold(input: string): number | undefined {
+	const match = /^(\d+(?:\.\d+)?)([km]?)$/i.exec(input);
+	if (!match) return undefined;
+	const suffix = match[2].toLowerCase();
+	const scale = suffix === "m" ? 6 : suffix === "k" ? 3 : 0;
+	const tokens = Number(`${match[1]}e${scale}`);
+	return Number.isSafeInteger(tokens) && tokens > 0 ? tokens : undefined;
 }
 
 function getPatchHost(): PatchHost | undefined {
@@ -198,6 +235,8 @@ export default function aluSolTuner(pi: ExtensionAPI): void {
 	let lastError: string | undefined;
 	let activeSessionId: string | undefined;
 	let guardThreshold = DEFAULT_GUARD_THRESHOLD;
+	let guardEnabled = true;
+	let disabled = new Set<string>();
 
 	const resetCycle = () => {
 		phase = "idle";
@@ -216,7 +255,7 @@ export default function aluSolTuner(pi: ExtensionAPI): void {
 	const controller: GuardController = {
 		generation,
 		async shouldStop(agent, turn) {
-			if (phase !== "idle" || nativeHookDetected) return false;
+			if (!guardEnabled || phase !== "idle" || nativeHookDetected) return false;
 			if (!TARGET_MODEL_IDS.has(turn.message.model)) return false;
 			if (turn.message.stopReason !== "toolUse" || turn.toolResults.length === 0) return false;
 
@@ -228,7 +267,7 @@ export default function aluSolTuner(pi: ExtensionAPI): void {
 			phase = "stopped";
 			stoppedTokens = tokens;
 			nativeCompacted = false;
-			notify(`阿露 Sol 调教在 ${formatTokens(tokens)} tokens 暂停；空闲后压缩上下文`, "warning");
+			notify(`阿露 Agent 调教在 ${formatTokens(tokens)} tokens 暂停；空闲后压缩上下文`, "warning");
 			return true;
 		},
 		onNativeHookDetected() {
@@ -236,13 +275,13 @@ export default function aluSolTuner(pi: ExtensionAPI): void {
 			nativeHookDetected = true;
 			resetCycle();
 			if (latestContext) setStatus(latestContext, undefined);
-			notify("阿露 Sol 调教已让位：Pi 已提供回合后停止能力", "info");
+			notify("阿露 Agent 调教已让位：Pi 已提供回合后停止能力", "info");
 		},
 		reportShimError(error) {
 			lastError = error instanceof Error ? error.message : String(error);
 			resetCycle();
 			if (latestContext) setStatus(latestContext, undefined);
-			notify(`阿露 Sol 调教出错：${lastError}`, "error");
+			notify(`阿露 Agent 调教出错：${lastError}`, "error");
 		},
 	};
 
@@ -287,19 +326,22 @@ export default function aluSolTuner(pi: ExtensionAPI): void {
 
 	pi.on("session_start", (_event, ctx) => {
 		latestContext = ctx;
-		guardThreshold = readConfig(ctx.cwd).guardThreshold;
+		// Pi 0.84 session_start covers startup, /reload and the new runtime from /new.
+		const config = readConfig(ctx.cwd);
+		guardThreshold = config.guardThreshold;
+		guardEnabled = config.guardEnabled;
+		disabled = config.disabled;
+		nativeHookDetected = false;
+		continuationCount = 0;
 		resetCycle();
 		lastError = undefined;
 		setStatus(ctx, undefined);
 		if (!patch.active || !registerController(ctx)) {
-			ctx.ui.notify(`阿露 Sol 调教已停用：${patch.reason ?? "无法注册会话保护"}`, "error");
+			ctx.ui.notify(`阿露 Agent 调教已停用：${patch.reason ?? "无法注册会话保护"}`, "error");
 		}
 	});
 
 	pi.on("before_agent_start", async (event, ctx) => {
-		const config = readConfig(event.systemPromptOptions?.cwd ?? ctx.cwd);
-		guardThreshold = config.guardThreshold;
-		const disabled = config.disabled;
 		if (disabled.has("all") || disabled.has("*")) return;
 
 		let prompt = event.systemPrompt;
@@ -343,7 +385,7 @@ export default function aluSolTuner(pi: ExtensionAPI): void {
 		}
 
 		phase = "compacting";
-		setStatus(ctx, `阿露 Sol 调教 · 正在压缩 ${formatTokens(stoppedTokens)}`);
+		setStatus(ctx, `阿露 Agent 调教 · 正在压缩 ${formatTokens(stoppedTokens)}`);
 		// Use Pi's normal compaction preparation, summarizer, and session rebuild path.
 		ctx.compact({
 			onComplete: () => {
@@ -353,7 +395,7 @@ export default function aluSolTuner(pi: ExtensionAPI): void {
 			onError: (error) => {
 				if (phase !== "compacting") return;
 				lastError = error.message;
-				ctx.ui.notify(`阿露 Sol 调教压缩失败，已继续任务 — ${error.message}`, "error");
+				ctx.ui.notify(`阿露 Agent 调教压缩失败，已继续任务 — ${error.message}`, "error");
 				continueAgentLoop(ctx, COMPACTION_FAILED_CONTINUATION);
 			},
 		});
@@ -366,20 +408,55 @@ export default function aluSolTuner(pi: ExtensionAPI): void {
 		resetCycle();
 	});
 
-	pi.registerCommand("alu-sol-status", {
-		description: "查看阿露的 Sol 调教插件状态",
-		handler: async (_args, ctx) => {
-			const phaseText: Record<GuardPhase, string> = {
-				idle: "等待触发",
-				stopped: "等待压缩",
-				compacting: "正在压缩",
-			};
-			const status = patch.active
-				? nativeHookDetected
-					? "阿露 Sol 调教：Pi 已提供原生保护，本插件无需接管"
-					: `阿露 Sol 调教：运行中，${phaseText[phase]}，阈值=${formatTokens(guardThreshold)}，已续跑=${continuationCount}`
-				: `阿露 Sol 调教：已停用，${patch.reason}`;
-			ctx.ui.notify(lastError ? `${status}；最近错误=${lastError}` : status, patch.active ? "info" : "error");
+	const showStatus = (ctx: ExtensionContext) => {
+		const phaseText: Record<GuardPhase, string> = {
+			idle: guardEnabled ? "等待触发" : "等待开启",
+			stopped: "等待压缩",
+			compacting: "正在压缩",
+		};
+		const availability = !patch.active
+			? `保护不可用：${patch.reason}`
+			: nativeHookDetected ? "Pi 已提供原生保护，本插件已让位" : phaseText[phase];
+		const status = `阿露 Agent 调教：当前会话保护=${guardEnabled ? "开启" : "关闭"}，当前阈值=${formatTokens(guardThreshold)} tokens；${availability}；已续跑=${continuationCount}`
+			+ "\n全局默认在启动、/reload、/new 时读取；on/off 仅改当前会话，threshold 同时保存全局默认。";
+		ctx.ui.notify(lastError ? `${status}\n最近错误：${lastError}` : status, patch.active ? "info" : "error");
+	};
+
+	const help = "/alu-agent on|off — 仅切换当前会话保护\n"
+		+ "/alu-agent default on|off — 保存全局默认开关，当前会话开关保持原值\n"
+		+ "/alu-agent threshold <tokens> — 修改当前阈值并保存全局默认，如 450k、1.05m\n"
+		+ "/alu-agent status|help — 查看状态或帮助\n"
+		+ "全局默认与纪律配置仅在启动、/reload、/new 时读取；其他已存在会话保持原值。";
+
+	pi.registerCommand("alu-agent", {
+		description: "设置当前上下文保护、全局默认，或查看状态",
+		handler: async (args, ctx) => {
+			const parts = args.trim().split(/\s+/);
+			const [command, value] = parts;
+			if ((!command || command === "status") && parts.length === 1) return showStatus(ctx);
+			if (command === "help" && parts.length === 1) return ctx.ui.notify(help, "info");
+			if ((command === "on" || command === "off") && parts.length === 1) {
+				guardEnabled = command === "on";
+				showStatus(ctx);
+				return;
+			}
+			const threshold = command === "threshold" && value ? parseThreshold(value) : undefined;
+			if (parts.length !== 2 || !((command === "default" && (value === "on" || value === "off"))
+				|| (command === "threshold" && threshold !== undefined))) {
+				ctx.ui.notify(`命令参数有误；阈值需为正整数 tokens（支持 k/m）。\n${help}`, "error");
+				return;
+			}
+			try {
+				saveGuardDefault(command === "default" ? { guardEnabled: value === "on" } : { guardThreshold: threshold! });
+			} catch (error) {
+				ctx.ui.notify(`全局默认保存失败，当前会话设置保持原值。请检查 alu-agent.json的格式和目录写入权限后重试：${error instanceof Error ? error.message : String(error)}`, "error");
+				return;
+			}
+			if (command === "threshold") guardThreshold = threshold!;
+			ctx.ui.notify(command === "default"
+				? `全局默认保护已保存为${value === "on" ? "开启" : "关闭"}；当前会话开关保持原值。`
+				: `当前阈值和全局默认阈值已保存为 ${formatTokens(guardThreshold)} tokens。`, "info");
+			showStatus(ctx);
 		},
 	});
 }

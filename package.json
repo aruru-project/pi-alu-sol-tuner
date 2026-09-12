@@ -1,14 +1,14 @@
 {
-  "name": "pi-alu-sol-tuner",
+  "name": "pi-alu-agent-tuner",
   "version": "0.1.0",
   "private": true,
-  "description": "阿露的 Sol 调教插件：工程纪律注入与超长工具回合上下文保护",
+  "description": "阿露 Agent 调教：工程纪律注入与超长工具回合上下文保护",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/aruru-project/pi-alu-sol-tuner.git"
+    "url": "https://github.com/aruru-project/pi-alu-agent-tuner.git"
   },
-  "homepage": "https://github.com/aruru-project/pi-alu-sol-tuner",
+  "homepage": "https://github.com/aruru-project/pi-alu-agent-tuner",
   "type": "module",
   "keywords": [
     "pi-package"
